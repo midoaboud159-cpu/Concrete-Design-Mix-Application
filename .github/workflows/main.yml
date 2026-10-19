@@ -1,0 +1,84 @@
+name: Build Signed Android AAB & APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: Prepare Project Files
+        run: |
+          # 1. فك ضغط ملف الـ ZIP آلياً إن وجد في المستودع
+          shopt -s nullglob
+          zip_files=(*.zip)
+          if [ ${#zip_files[@]} -gt 0 ]; then
+            echo "Unzipping ${zip_files[0]}..."
+            unzip -o "${zip_files[0]}" -d .
+          fi
+
+          # 2. التأكد من وجود ملفات المشروع في المسار الرئيسي
+          if [ ! -f "settings.gradle.kts" ]; then
+            found_settings=$(find . -name "settings.gradle.kts" -not -path "*/.*" | head -n 1)
+            if [ -n "$found_settings" ]; then
+              parent_folder=$(dirname "$found_settings")
+              echo "Moving project from $parent_folder to repository root..."
+              cp -rn "$parent_folder"/* .
+            fi
+          fi
+
+          # 3. التأكد من وجود مفتاح التوقيع الرقمي
+          mkdir -p app
+          if [ ! -f "app/release-key.jks" ]; then
+            echo "Generating release keystore..."
+            keytool -genkeypair -v \
+              -keystore app/release-key.jks \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias ksa_concrete_mix_key \
+              -storepass KsaMixPro2026! \
+              -keypass KsaMixPro2026! \
+              -dname "CN=KSA Concrete Mix Pro, OU=Civil Engineering, O=KSA Mix Pro, L=Riyadh, ST=Riyadh, C=SA"
+          fi
+
+          if [ ! -f "KEYSTORE_CREDENTIALS.txt" ]; then
+            printf "Keystore: app/release-key.jks\nPassword: KsaMixPro2026!\nAlias: ksa_concrete_mix_key\n" > KEYSTORE_CREDENTIALS.txt
+          fi
+
+      - name: Build Signed Release AAB & APK
+        env:
+          KEYSTORE_PASSWORD: KsaMixPro2026!
+          KEY_ALIAS: ksa_concrete_mix_key
+          KEY_PASSWORD: KsaMixPro2026!
+        run: |
+          gradle assembleRelease bundleRelease --no-daemon
+
+      - name: Upload Google Play Signed AAB Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Google-Play-Signed-Bundle-AAB
+          path: |
+            app/build/outputs/bundle/release/*.aab
+            app/release-key.jks
+            KEYSTORE_CREDENTIALS.txt
+
+      - name: Upload Signed Installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-Installable-APK
+          path: app/build/outputs/apk/release/*.apk
